@@ -1,0 +1,8 @@
+# Motor (CLI)
+pymupdf
+pytesseract
+pillow
+rapidfuzz
+# Interfaz web
+flask
+# Además: Tesseract OCR instalado como binario del sistema (con el idioma spa)
