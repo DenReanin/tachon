@@ -18,7 +18,10 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import fitz  # pymupdf
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz  # pymupdf
 from PIL import Image, ImageDraw
 from rapidfuzz import fuzz
 

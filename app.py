@@ -9,13 +9,17 @@ DNI/NIE, IBAN módulo 97, Luhn para tarjetas), no un modelo de IA.
 Uso:  py app.py   →  http://127.0.0.1:5000
 """
 
+import os
 import re
 import tempfile
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import fitz
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 from flask import Flask, jsonify, request, send_file
 from PIL import Image
 
@@ -520,5 +524,6 @@ btnProcesar.addEventListener("click", async () => {
 
 if __name__ == "__main__":
     tachon._configurar_tesseract()
-    print("Tachón en marcha: abre http://127.0.0.1:5000 en el navegador (Ctrl+C para parar).")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    port = int(os.environ.get("TACHON_PORT", "5000"))
+    print(f"Tachón en marcha: abre http://127.0.0.1:{port} en el navegador (Ctrl+C para parar).")
+    app.run(host="127.0.0.1", port=port, debug=False)

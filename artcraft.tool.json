@@ -1,0 +1,23 @@
+{
+  "id": "tachon",
+  "name": "Tachón",
+  "abbr": "TC",
+  "tagline": "Redacción y borrado real de datos personales (DNI, IBAN, teléfono, EXIF) en PDFs e imágenes",
+  "category": "Privacidad & Documentos",
+  "brandColor": "#EF4444",
+  "icon": "shield-check",
+  "repo": "DenReanin/tachon",
+  "branch": "main",
+  "private": false,
+  "updateStrategy": {
+    "mode": "branch-tarball",
+    "postInstall": "bash ./run-tachon.sh --setup-only",
+    "requireMainCheckSuccess": false
+  },
+  "launch": {
+    "executable": "run-tachon.sh",
+    "args": [],
+    "workingDir": "bin",
+    "runInTerminal": false
+  }
+}

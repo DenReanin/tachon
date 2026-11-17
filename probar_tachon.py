@@ -13,7 +13,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-import fitz
+try:
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 from PIL import Image
 
 from tachon import _configurar_tesseract, normalizar
@@ -260,8 +263,11 @@ def main() -> int:
     crear_ficheros()
 
     caso_1_pdf_texto()
-    caso_2_pdf_escaneado()
-    caso_3_png()
+    if shutil.which("tesseract") is not None:
+        caso_2_pdf_escaneado()
+        caso_3_png()
+    else:
+        print("\n[AVISO] 'tesseract' no está instalado en PATH: se omiten Criterio 2 y Criterio 3 (OCR). Instala tesseract + tesseract-langpack-spa para ejecutarlos.")
     caso_deteccion()
 
     print()
