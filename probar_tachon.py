@@ -106,11 +106,11 @@ def crear_ficheros() -> None:
     )
 
 
-def ejecutar_tachon(entrada: Path, salida: Path) -> subprocess.CompletedProcess:
+def ejecutar_tachon(entrada: Path, salida: Path, datos_path: Path | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     return subprocess.run(
         [sys.executable, str(RAIZ / "tachon.py"), str(entrada),
-         "--datos", str(PRUEBAS / "datos.txt"), "--salida", str(salida)],
+         "--datos", str(datos_path or (PRUEBAS / "datos.txt")), "--salida", str(salida)],
         capture_output=True, text=True, encoding="utf-8", env=env,
     )
 
@@ -233,8 +233,10 @@ def caso_deteccion() -> None:
 
     print("\nDetección automática (patrones locales, sin IA)")
     texto = (
-        "DNI: 12.345.678-Z y NIE X-1234567-L\n"
+        "DNI: 12.345.678-Z y NIE X-1234567-L, CIF B12345674\n"
+        "NSS: 28 12345678 40, Vehículo 1234 BCD\n"
         "Tel: +34 612 345 678, correo juan.perez@correo.com\n"
+        "Domicilio: Calle Mayor de la Constitución 34\n"
         "Nacido el 3 de enero de 1990, alta el 12/05/2024\n"
         "CP 28013, Madrid\n"
         "Sello de operación: 2026010213015602521006663009"
@@ -244,8 +246,8 @@ def caso_deteccion() -> None:
     )
     detectados = detectar_datos(texto)
     tipos = {d["tipo"] for d in detectados}
-    for esperado in ["DNI", "NIE", "Teléfono", "Correo", "Fecha",
-                     "Cód. postal", "Localidad", "Sello/hash"]:
+    for esperado in ["DNI", "NIE", "CIF", "NSS", "Matrícula", "Teléfono", "Correo",
+                     "Dirección", "Fecha", "Cód. postal", "Localidad", "Sello/hash"]:
         comprobar(f"detecta {esperado}", esperado in tipos, str(sorted(tipos)))
     sellos = [d["valor"] for d in detectados if d["tipo"] == "Sello/hash"]
     comprobar("captura los dos sellos enteros",
@@ -254,7 +256,146 @@ def caso_deteccion() -> None:
     comprobar("captura ambas fechas (texto y numérica)", len(fechas) == 2, str(fechas))
     comprobar("lo dudoso sale desmarcado (fiable=False)",
               all(not d["fiable"] for d in detectados
-                  if d["tipo"] in ("Fecha", "Cód. postal", "Localidad")))
+                  if d["tipo"] in ("Fecha", "Cód. postal", "Dirección", "Localidad")))
+
+
+def caso_multilinea() -> None:
+    print("\nMejora 1 — Redacción multilínea (dato partido entre dos líneas)")
+    entrada = ENTRADA / "multilinea.pdf"
+    datos_f = PRUEBAS / "datos_multilinea.txt"
+    salida = PRUEBAS / "salida_multilinea"
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        fitz.Rect(72, 80, 230, 200),
+        "Domicilio: Calle Mayor de la Constitución 34\nDocumento válido",
+        fontsize=12,
+    )
+    doc.save(entrada)
+    doc.close()
+
+    datos_f.write_text("Calle Mayor de la Constitución 34\n", encoding="utf-8")
+    r = ejecutar_tachon(entrada, salida, datos_path=datos_f)
+    destino = salida / "multilinea_filtrado.pdf"
+    comprobar("multilínea termina sin error (exit 0)", r.returncode == 0, r.stdout + r.stderr)
+    comprobar("multilínea genera salida", destino.exists())
+    if destino.exists():
+        doc_out = fitz.open(destino)
+        txt = "\n".join(p.get_text() for p in doc_out)
+        doc_out.close()
+        comprobar("dato partido eliminado por completo",
+                  normalizar("Calle Mayor de la Constitución 34") not in normalizar(txt), txt)
+        comprobar("texto inocente conservado", "Documento" in txt, txt)
+
+
+def caso_enlaces_y_toc() -> None:
+    print("\nMejora 2 — Eliminación de enlaces mailto: y marcadores (TOC)")
+    entrada = ENTRADA / "enlaces_toc.pdf"
+    datos_f = PRUEBAS / "datos_enlaces.txt"
+    salida = PRUEBAS / "salida_enlaces"
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 90), "Contacto oficial de soporte técnico y atención al usuario", fontsize=12)
+    page.insert_link({
+        "kind": fitz.LINK_URI,
+        "from": fitz.Rect(72, 76, 360, 100),
+        "uri": "mailto:juan.perez@correo.com",
+    })
+    doc.set_toc([[1, "Expediente de 12345678Z", 1]])
+    doc.save(entrada)
+    doc.close()
+
+    datos_f.write_text("juan.perez@correo.com\n12345678Z\n", encoding="utf-8")
+    r = ejecutar_tachon(entrada, salida, datos_path=datos_f)
+    destino = salida / "enlaces_toc_filtrado.pdf"
+    comprobar("enlaces/TOC termina sin error (exit 0)", r.returncode == 0, r.stdout + r.stderr)
+    if destino.exists():
+        doc_out = fitz.open(destino)
+        uris = [lnk.get("uri", "") for p in doc_out for lnk in p.get_links()]
+        toc = doc_out.get_toc()
+        doc_out.close()
+        comprobar("enlace mailto: eliminado", not any("juan.perez@correo.com" in u for u in uris), str(uris))
+        comprobar("TOC sensible redactado", not any("12345678Z" in str(e[1]) for e in toc), str(toc))
+
+
+def caso_web_api() -> None:
+    import io
+    import tempfile
+    import zipfile
+    from app import DESCARGAS, app
+
+    print("\nMejora 3 — API Web Flask (/detectar, /procesar individual y lote ZIP, /tmp limpio)")
+    tmp_root = Path(tempfile.gettempdir())
+    antes_tmp = {p.name for p in tmp_root.glob("tachon_*")}
+    client = app.test_client()
+
+    r_home = client.get("/")
+    comprobar("GET / responde 200", r_home.status_code == 200)
+
+    pdf_bytes = (ENTRADA / "texto.pdf").read_bytes()
+
+    r_det = client.post(
+        "/detectar",
+        data={"fichero": (io.BytesIO(pdf_bytes), "texto.pdf")},
+        content_type="multipart/form-data",
+    )
+    comprobar("POST /detectar responde 200", r_det.status_code == 200, r_det.get_data(as_text=True))
+    det_json = r_det.get_json() or {}
+    tipos_web = {d["tipo"] for d in det_json.get("detectados", [])}
+    comprobar("POST /detectar encuentra DNI, Teléfono, Correo e IBAN",
+              {"DNI", "Correo", "Teléfono"}.issubset(tipos_web)
+              and ("IBAN" in tipos_web or "Posible IBAN" in tipos_web),
+              str(tipos_web))
+    despues_det_tmp = {p.name for p in tmp_root.glob("tachon_*")}
+    comprobar("/detectar no deja carpetas en /tmp", antes_tmp == despues_det_tmp,
+              str(despues_det_tmp - antes_tmp))
+
+    r_proc = client.post(
+        "/procesar",
+        data={
+            "fichero": (io.BytesIO(pdf_bytes), "texto.pdf"),
+            "datos": f"{DNI}\n{EMAIL}\n",
+        },
+        content_type="multipart/form-data",
+    )
+    comprobar("POST /procesar individual responde 200", r_proc.status_code == 200)
+    tok1 = (r_proc.get_json() or {}).get("token", "")
+    r_dl1 = client.get(f"/descargar/{tok1}")
+    comprobar("GET /descargar individual devuelve PDF válido",
+              r_dl1.status_code == 200 and r_dl1.data.startswith(b"%PDF-"))
+    r_dl1.close()
+    if tok1 in DESCARGAS:
+        _, _, tdir1, _ = DESCARGAS.pop(tok1)
+        comprobar("original sin tachar eliminado de /tmp", not (tdir1 / "texto.pdf").exists())
+        shutil.rmtree(tdir1, ignore_errors=True)
+
+    r_lote = client.post(
+        "/procesar",
+        data={
+            "ficheros": [
+                (io.BytesIO(pdf_bytes), "doc_a.pdf"),
+                (io.BytesIO(pdf_bytes), "doc_b.pdf"),
+            ],
+            "datos": f"{DNI}\n{EMAIL}\n",
+        },
+        content_type="multipart/form-data",
+    )
+    comprobar("POST /procesar lote responde 200", r_lote.status_code == 200)
+    tok2 = (r_lote.get_json() or {}).get("token", "")
+    r_dl2 = client.get(f"/descargar/{tok2}")
+    comprobar("GET /descargar lote devuelve ZIP", r_dl2.status_code == 200)
+    if r_dl2.status_code == 200:
+        with zipfile.ZipFile(io.BytesIO(r_dl2.data)) as zf:
+            nombres = set(zf.namelist())
+        comprobar("ZIP incluye ambos PDFs e informe.csv",
+                  {"doc_a_filtrado.pdf", "doc_b_filtrado.pdf", "informe.csv"}.issubset(nombres),
+                  str(nombres))
+    r_dl2.close()
+    if tok2 in DESCARGAS:
+        _, _, tdir2, _ = DESCARGAS.pop(tok2)
+        shutil.rmtree(tdir2, ignore_errors=True)
 
 
 def main() -> int:
@@ -269,6 +410,9 @@ def main() -> int:
     else:
         print("\n[AVISO] 'tesseract' no está instalado en PATH: se omiten Criterio 2 y Criterio 3 (OCR). Instala tesseract + tesseract-langpack-spa para ejecutarlos.")
     caso_deteccion()
+    caso_multilinea()
+    caso_enlaces_y_toc()
+    caso_web_api()
 
     print()
     if fallos:

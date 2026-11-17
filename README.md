@@ -17,9 +17,9 @@ py app.py
 
 Abre `http://127.0.0.1:5000` en el navegador:
 
-1. **Arrastra** tu PDF o imagen a la zona de subida (o haz clic para elegirlo).
-2. Rellena los campos de lo que hay que borrar (DNI, teléfono, correo…), o pulsa **«Detectar datos automáticamente»**: la herramienta lee el documento en local y te propone los datos con formato conocido que encuentre — DNI y NIE (validando la letra), teléfonos, correos, IBAN (módulo 97), tarjetas (Luhn), **sellos de operación/firma y hashes** (cadenas largas con muchos dígitos), **fechas** (numéricas o «3 de enero de 1990»), **códigos postales** y **localidades** habituales. Los tipos con validación fuerte salen marcados; los dudosos (fechas, CP, localidades) salen desmarcados para que decidas tú. Nombres y direcciones no se pueden detectar por patrón: escríbelos a mano.
-3. Pulsa **«Tachar y descargar»**: se procesa y el fichero limpio se descarga solo.
+1. **Arrastra** uno o varios PDFs o imágenes a la zona de subida (o haz clic para elegirlos; si subes varios, se empaquetan en un `.zip` junto a `informe.csv`).
+2. Rellena los campos de lo que hay que borrar (DNI, teléfono, correo…), importa un `datos.txt`, o pulsa **«Detectar datos automáticamente»**: la herramienta lee el documento en local y te propone los datos con formato conocido que encuentre — DNI y NIE (validando la letra), CIF, NSS (módulo 97), teléfonos, correos, IBAN (módulo 97), tarjetas (Luhn), matrículas, **sellos de operación/firma y hashes** (cadenas largas con muchos dígitos), **direcciones postales**, **fechas** (numéricas o «3 de enero de 1990»), **códigos postales** y **localidades** habituales. Los tipos con validación fuerte salen marcados; los dudosos (direcciones, fechas, CP, localidades) salen desmarcados para que decidas tú. Nombres completos escríbelos a mano.
+3. Pulsa **«Tachar y descargar»**: se procesa (incluyendo saltos de línea, enlaces `mailto:`/`tel:`, marcadores TOC y metadatos) y el fichero limpio se descarga solo, eliminando al instante los originales temporales.
 
 El servidor solo escucha en tu propio equipo (`127.0.0.1`) y no sale a internet: la detección es por patrones, sin IA ni servicios externos.
 

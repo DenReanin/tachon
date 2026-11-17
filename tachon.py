@@ -76,6 +76,13 @@ class Dato:
     def etiqueta(self) -> str:
         return ("re:" + self.original) if self.es_regex else self.original
 
+    def coincide_en_texto(self, texto: str) -> bool:
+        if not texto:
+            return False
+        if self.es_regex:
+            return bool(self.patron.search(texto))
+        return self.normalizado in normalizar(texto)
+
 
 def datos_desde_lineas(lineas, avisar=print) -> list[Dato]:
     """Convierte líneas de texto en Datos. Avisa y descarta los demasiado cortos."""
@@ -119,6 +126,10 @@ class Linea:
     que procede ese carácter (-1 en los espacios de unión del texto crudo).
     """
 
+    bloque: tuple = ()
+    es_compuesta: bool = False
+    corte_palabras: int = 0
+    palabras: list = field(default_factory=list)
     rects: list = field(default_factory=list)
     crudo: str = ""
     mapa_crudo: list = field(default_factory=list)
@@ -127,6 +138,7 @@ class Linea:
 
     def anadir_palabra(self, texto: str, rect: fitz.Rect) -> None:
         idx = len(self.rects)
+        self.palabras.append((texto, rect))
         self.rects.append(rect)
         if self.crudo:
             self.crudo += " "
@@ -137,9 +149,41 @@ class Linea:
         self.norm += norm_pal
         self.mapa_norm.extend([idx] * len(norm_pal))
 
+    def indices_entre(self, mapa: list, ini: int, fin: int) -> list[int]:
+        return sorted(
+            {mapa[i] for i in range(ini, fin) if 0 <= i < len(mapa) and mapa[i] >= 0}
+        )
+
+    def rects_para_indices(self, indices: list[int]) -> list:
+        if self.es_compuesta:
+            # Solo aceptar coincidencias que crucen de la primera línea a la segunda.
+            tiene_primera = any(i < self.corte_palabras for i in indices)
+            tiene_segunda = any(i >= self.corte_palabras for i in indices)
+            if not (tiene_primera and tiene_segunda):
+                return []
+        return [self.rects[i] for i in indices]
+
     def rects_entre(self, mapa: list, ini: int, fin: int) -> list:
-        indices = {mapa[i] for i in range(ini, fin) if 0 <= i < len(mapa) and mapa[i] >= 0}
-        return [self.rects[i] for i in sorted(indices)]
+        return self.rects_para_indices(self.indices_entre(mapa, ini, fin))
+
+
+def _anadir_pares_multilinea(lineas_base: list[Linea]) -> list[Linea]:
+    """Añade pares de líneas consecutivas dentro del mismo bloque de texto."""
+    resultado = list(lineas_base)
+    for l1, l2 in zip(lineas_base, lineas_base[1:]):
+        if l1.bloque != l2.bloque:
+            continue
+        par = Linea(
+            bloque=l1.bloque,
+            es_compuesta=True,
+            corte_palabras=len(l1.rects),
+        )
+        for texto, rect in l1.palabras:
+            par.anadir_palabra(texto, rect)
+        for texto, rect in l2.palabras:
+            par.anadir_palabra(texto, rect)
+        resultado.append(par)
+    return resultado
 
 
 def lineas_desde_words(words: list) -> list[Linea]:
@@ -147,8 +191,9 @@ def lineas_desde_words(words: list) -> list[Linea]:
     grupos: dict[tuple, Linea] = {}
     for x0, y0, x1, y1, texto, n_block, n_line, _n_word in words:
         clave = (n_block, n_line)
-        grupos.setdefault(clave, Linea()).anadir_palabra(texto, fitz.Rect(x0, y0, x1, y1))
-    return list(grupos.values())
+        linea = grupos.setdefault(clave, Linea(bloque=(n_block,)))
+        linea.anadir_palabra(texto, fitz.Rect(x0, y0, x1, y1))
+    return _anadir_pares_multilinea(list(grupos.values()))
 
 
 def lineas_desde_ocr(datos_ocr: dict, zoom: float) -> list[Linea]:
@@ -164,11 +209,13 @@ def lineas_desde_ocr(datos_ocr: dict, zoom: float) -> list[Linea]:
         if not texto or int(datos_ocr["conf"][i]) < 0:
             continue
         clave = (datos_ocr["block_num"][i], datos_ocr["par_num"][i], datos_ocr["line_num"][i])
+        bloque = (datos_ocr["block_num"][i], datos_ocr["par_num"][i])
         x, y = datos_ocr["left"][i], datos_ocr["top"][i]
         w, h = datos_ocr["width"][i], datos_ocr["height"][i]
         rect = fitz.Rect(x / zoom, y / zoom, (x + w) / zoom, (y + h) / zoom)
-        grupos.setdefault(clave, Linea()).anadir_palabra(texto, rect)
-    return list(grupos.values())
+        linea = grupos.setdefault(clave, Linea(bloque=bloque))
+        linea.anadir_palabra(texto, rect)
+    return _anadir_pares_multilinea(list(grupos.values()))
 
 
 @dataclass
@@ -184,7 +231,7 @@ def buscar_en_lineas(
     con_fuzzy: bool,
     corte_fuzzy: float,
 ) -> list[Coincidencia]:
-    """Busca todos los datos en las líneas. Fuzzy solo sobre páginas con OCR."""
+    """Busca todos los datos en las líneas. Fuzzy solo sobre líneas simples con OCR."""
     resultado: list[Coincidencia] = []
     for linea in lineas:
         for dato in datos:
@@ -209,11 +256,11 @@ def buscar_en_lineas(
                     resultado.append(Coincidencia(rects, dato))
                 inicio = pos + len(dato.normalizado)
 
-            # Pasada aproximada: solo si la línea es al menos tan larga como el
-            # dato — si es más corta, partial_ratio puntúa 100 a cualquier
-            # fragmento contenido en el dato y arrasaría líneas inocentes.
+            # Pasada aproximada: solo sobre líneas individuales (no compuestas) y
+            # cuando la línea es al menos tan larga como el dato.
             if (
                 con_fuzzy
+                and not linea.es_compuesta
                 and not encontrado_exacto
                 and len(linea.norm) >= len(dato.normalizado)
             ):
@@ -239,11 +286,55 @@ def ocr_pagina(page: fitz.Page, dpi: int, idioma: str) -> list[Linea]:
     return lineas_desde_ocr(datos_ocr, zoom)
 
 
+def _limpiar_enlaces_pagina(
+    page: fitz.Page,
+    rectangulos_tachados: list[fitz.Rect],
+    datos: list[Dato],
+) -> int:
+    """Elimina enlaces (mailto:, tel:, URIs) que solapen o contengan datos sensibles."""
+    eliminados = 0
+    for link in page.get_links():
+        uri = link.get("uri") or ""
+        link_rect = link.get("from")
+        solapa = bool(link_rect and any(r.intersects(link_rect) for r in rectangulos_tachados))
+        datos_en_uri = [d for d in datos if d.coincide_en_texto(uri)]
+        if solapa or datos_en_uri:
+            page.delete_link(link)
+            eliminados += 1
+            if not solapa:
+                for d in datos_en_uri:
+                    d.coincidencias += 1
+    return eliminados
+
+
+def _limpiar_toc(doc: fitz.Document, datos: list[Dato]) -> int:
+    """Redacta entradas de la tabla de contenidos (marcadores) con datos sensibles."""
+    toc = doc.get_toc(simple=False)
+    if not toc:
+        return 0
+    modificados = 0
+    nuevo_toc = []
+    for entrada in toc:
+        titulo = str(entrada[1]) if len(entrada) > 1 else ""
+        coinciden = [d for d in datos if d.coincide_en_texto(titulo)]
+        if coinciden:
+            entrada = list(entrada)
+            entrada[1] = "[REDACTADO]"
+            modificados += 1
+            for d in coinciden:
+                d.coincidencias += 1
+        nuevo_toc.append(entrada)
+    if modificados:
+        doc.set_toc(nuevo_toc)
+    return modificados
+
+
 def procesar_pdf(entrada: Path, salida: Path, datos: list[Dato], args) -> dict:
     doc = fitz.open(entrada)
     modos = set()
     n_coincidencias = 0
     n_aproximadas = 0
+    n_enlaces_borrados = 0
 
     for page in doc:
         words = page.get_text("words")
@@ -263,6 +354,7 @@ def procesar_pdf(entrada: Path, salida: Path, datos: list[Dato], args) -> dict:
             usa_ocr = True
 
         coincidencias = buscar_en_lineas(lineas, datos, usa_ocr, args.corte_fuzzy)
+        rectangulos_pagina: list[fitz.Rect] = []
         if coincidencias:
             for c in coincidencias:
                 n_coincidencias += 1
@@ -270,9 +362,13 @@ def procesar_pdf(entrada: Path, salida: Path, datos: list[Dato], args) -> dict:
                     n_aproximadas += 1
                 for rect in c.rects:
                     page.add_redact_annot(rect, fill=(0, 0, 0))
+                    rectangulos_pagina.append(rect)
             # Redacción real: elimina el texto y los píxeles de imagen debajo.
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
 
+        n_enlaces_borrados += _limpiar_enlaces_pagina(page, rectangulos_pagina, datos)
+
+    _limpiar_toc(doc, datos)
     doc.set_metadata({})
     doc.del_xml_metadata()
     doc.save(salida, garbage=4, deflate=True, clean=True)
@@ -282,6 +378,7 @@ def procesar_pdf(entrada: Path, salida: Path, datos: list[Dato], args) -> dict:
         "modo": "+".join(sorted(modos)) if modos else "vacío",
         "coincidencias": n_coincidencias,
         "aproximadas": n_aproximadas,
+        "enlaces_borrados": n_enlaces_borrados,
     }
 
 
@@ -309,17 +406,31 @@ def procesar_imagen(entrada: Path, salida: Path, datos: list[Dato], args) -> dic
 
 
 def verificar_pdf(salida: Path, datos: list[Dato]) -> list[str]:
-    """Reabre el PDF y comprueba que ningún dato sigue en la capa de texto."""
+    """Reabre el PDF y comprueba que ningún dato sigue en texto, enlaces ni TOC."""
     alertas: list[str] = []
     doc = fitz.open(salida)
     texto_total = "\n".join(page.get_text() for page in doc)
+    uris_total = [link.get("uri") or "" for page in doc for link in page.get_links()]
+    toc_titulos = [str(e[1]) for e in doc.get_toc(simple=True) if len(e) > 1]
     doc.close()
+
+    for uri in uris_total:
+        for dato in datos:
+            if dato.coincide_en_texto(uri):
+                alertas.append(f"ALERTA: «{dato.etiqueta}» sigue en un enlace del PDF ({uri})")
+
+    for titulo in toc_titulos:
+        for dato in datos:
+            if dato.coincide_en_texto(titulo):
+                alertas.append(f"ALERTA: «{dato.etiqueta}» sigue en un marcador del PDF")
+
     if not texto_total.strip():
         alertas.append(
             "SIN CAPA DE TEXTO: la verificación no puede confirmar nada sobre este "
             "fichero (probablemente era escaneado). Revísalo a ojo."
         )
         return alertas
+
     norm_total = normalizar(texto_total)
     for dato in datos:
         if dato.es_regex:
